@@ -11,23 +11,39 @@ from langgraph.prebuilt import create_react_agent
 from core.config_manager import load_config
 from core.config import DB_PATH
 from core.ingest_knowledge import run_incremental_sync
+from core.spreadsheet_tool import (
+    query_project_spreadsheets,
+    is_quantitative_query,
+    extract_project_name,
+    extract_sheet_preview,
+    search_sheet_for_terms,
+)
+
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
+# Instantiate embeddings once globally to prevent first-token latency
+_embeddings_instance = HuggingFaceEmbeddings(
+    model_name="all-MiniLM-L6-v2",
+    model_kwargs={'device': 'cpu'},
+    encode_kwargs={'normalize_embeddings': False}
+)
+
+# Global query cache tracked for auto-search chaining
+LATEST_USER_QUERY = ""
+
 
 JARVIS_SYSTEM_PROMPT = """You are Jarvis QS, an expert Quantity Surveying AI assistant.
 
 CRITICAL IDENTITY & ANTI-HALLUCINATION RULES:
 1. STRICT VERIFICATION: Only answer using exact content returned by the `search_knowledge_vault` tool. Do not infer, embellish, or extrapolate project names, specifications, or figures that are not explicitly present in the retrieved documents.
 2. TOOL-FIRST WORKFLOW: If the user asks about projects, specifications, contracts, or details, call `search_knowledge_vault` FIRST. Do not answer from memory or general knowledge.
-3. HONEST NEGATIVE RESPONSE: If the tool returns no results or empty content, explicitly state that no relevant projects were found in the database. Do not fabricate project names or substitute unrelated projects.
-4. ERROR HANDLING: If the database search tool fails or returns an error (e.g. "Error executing search: ..."), you must output exactly: "The database search could not be completed due to a connection error."
-5. RESPONSE FORMATTING: You may think inside a brief <thinking>...</thinking> block, but you MUST ALWAYS write your final response to the user AFTER </thinking>. NEVER end your message without providing a direct response to the user.
+3. HONEST NEGATIVE RESPONSE: If the tool returns no results or empty content, explicitly state that no relevant projects were found in the database. Do not fabricate project names or substitute unrelated numbers.
+4. QUANTITATIVE VS CONCEPTUAL DUAL-ROUTING:
+   - For quantitative queries (tonnages, reinforcement schedules, pricing, steel quantities, unit rates, costing, takeoff data), target specific spreadsheets. The system will auto-route to spreadsheet querying when quantitative keywords are detected.
+   - For specifications, standards, codes of practice, workmanship descriptions, or contract terms, use vector search.
 
-TOOL USAGE GUIDELINES:
-- `search_knowledge_vault`: Use to answer questions about past construction projects, specifications, BoQs, and rates.
-- `sync_knowledge_vault`: Use this immediately if the user mentions adding new files, updating old spreadsheets, adding variations to past projects, or asks you to "sync" or "learn" the workspace.
-
-At the very end of your final response, you MUST provide 2 to 3 short, relevant follow-up actions or questions the user might want to ask next based on your findings.
-Format them strictly on a new line using this exact syntax:
-[SUGGESTIONS: Short Action 1 | Short Action 2 | Short Action 3]
+SUGGEST RETRIEVAL QUESTIONS:
+At the absolute end of your response, always output exactly three bullet points starting with 'Suggested next questions:' suggesting related technical or retrieval queries the user might run next to verify or extract further information from the Knowledge Vault.
 Keep each suggestion under 5 words.
 """
 
@@ -74,41 +90,155 @@ def parse_raw_json_tool_calls(response: AIMessage) -> AIMessage:
     # Pattern 3: bare JSON dict anywhere in content
     if not json_match:
         json_match = re.search(
-            r'(\{\s*"name"\s*:\s*"search_knowledge_vault".*?\})',
+            r'(\{\s*"name"\s*:\s*".*?"\s*,\s*"args"\s*:\s*\{.*?\}\s*\})',
             content,
             re.DOTALL,
         )
 
     if json_match:
+        json_str = json_match.group(1).strip()
         try:
-            tool_data = json.loads(json_match.group(1))
-            tool_name = tool_data.get("name")
-            raw_args = tool_data.get("arguments", tool_data.get("args", {}))
+            parsed = json.loads(json_str)
+            tool_name = parsed.get("name")
+            tool_args = parsed.get("args") or parsed.get("arguments") or {}
 
-            # Sanitize: unwrap schema-style {"type": "string", "value": "X"} -> "X"
-            sanitized_args = {}
-            if isinstance(raw_args, dict):
-                for key, val in raw_args.items():
-                    if isinstance(val, dict) and "value" in val:
-                        sanitized_args[key] = str(val["value"])
-                    else:
-                        sanitized_args[key] = val
-            elif isinstance(raw_args, str):
-                sanitized_args = {"query": raw_args}
+            # Fallback format handling (e.g. if args is serialized as string)
+            if isinstance(tool_args, str):
+                try:
+                    tool_args = json.loads(tool_args)
+                except Exception:
+                    tool_args = {"query": tool_args}
 
-            if tool_name in ["search_knowledge_vault", "sync_knowledge_vault"]:
-                return AIMessage(
-                    content="",
-                    tool_calls=[{
-                        "name": tool_name,
-                        "args": sanitized_args,
-                        "id": "call_fallback_001",
-                    }],
-                )
+            if tool_name:
+                response.tool_calls = [{
+                    "name": tool_name,
+                    "args": tool_args,
+                    "id": "call_fallback_001",
+                }]
         except Exception:
             pass
 
     return response
+
+
+def _run_vector_search(query: str, db_path_resolved: str) -> str:
+    try:
+        if not os.path.exists(db_path_resolved):
+            return f"Error: FAISS path '{db_path_resolved}' does not exist. Please run ingestion first."
+
+        # Load config to determine Cloud/OmniRoute mode limits
+        cfg = load_config()
+        provider = cfg.get("provider_type", "omniroute")
+
+        # Load FAISS index using cached embeddings
+        vectorstore = FAISS.load_local(db_path_resolved, _embeddings_instance, allow_dangerous_deserialization=True)
+        
+        # Dynamic Retrieval k
+        k = 150 if provider == "omniroute" else 40
+        retriever = vectorstore.as_retriever(search_kwargs={"k": k})
+        results = retriever.invoke(query)
+
+        if not results:
+            return f"No relevant information found in the Knowledge Vault for '{query}'."
+
+        formatted_context = []
+        for i, doc in enumerate(results):
+            # Safely extract metadata dictionary
+            meta = doc.metadata if isinstance(doc.metadata, dict) else {}
+            source = meta.get("filename") or meta.get("source") or "Unknown Document"
+
+            # Remove Retrieval Truncation in Cloud/OmniRoute mode
+            if provider == "omniroute":
+                content_snippet = doc.page_content
+            else:
+                content_snippet = doc.page_content[:1000]
+
+            header = f"--- Result {i+1} (Source: {source}) ---"
+            formatted_context.append(f"{header}\n{content_snippet}")
+
+        return "\n\n".join(formatted_context)
+
+    except Exception as e:
+        error_msg = str(e)
+        return f"❌ [SYSTEM OUTAGE]: The vector database or embedding API connection failed. Error details: {error_msg}. INSTRUCTION: Tell the user exactly this: 'My connection to the Knowledge Vault is temporarily unavailable due to a service outage. Please retry in a few moments.'"
+
+
+# ── LangGraph Agent Tools ────────────────────────────────────────────────────
+
+@tool
+def search_knowledge_vault(query: str) -> str:
+    """
+    Searches the Knowledge Vault vector database for specifications, drawings indexes, 
+    contracts, codes of practice, and architectural/civil standard requirements.
+    """
+    cfg = load_config()
+    db_path_resolved = cfg.get("db_path", DB_PATH)
+    return f"[VAULT SEARCH RESULTS]\n" + _run_vector_search(query, db_path_resolved)
+
+
+@tool
+def search_spreadsheet_data(query: str) -> str:
+    """
+    Searches project spreadsheets for quantitative/tabular data (steel tonnages, 
+    reinforcement items, BoQ schedules, rates, costings, concrete volumes).
+    Automatically routes the lookup to the appropriate project directory.
+    """
+    project_name = extract_project_name(query)
+    if not project_name:
+        return "Error: Could not identify which project you are asking about. Please specify the project name."
+
+    # Parse search terms from the query
+    clean_query = re.sub(r'[^\w\s]', ' ', query).lower()
+    search_terms = []
+    
+    # Check for quantitative keywords to use as search terms
+    for word in clean_query.split():
+        if word in QUANTITATIVE_KEYWORDS or len(word) > 4:
+            if word not in ["project", "excel", "sheet", "spreadsheet", "data", project_name.lower()]:
+                search_terms.append(word)
+
+    if not search_terms:
+         search_terms = ["steel", "tonnage", "pricing", "reinforcement", "concrete"]
+
+    # Deduplicate while preserving order
+    seen = set()
+    search_terms = [x for x in search_terms if not (x in seen or seen.add(x))]
+
+    return query_project_spreadsheets(project_name, search_terms)
+
+
+@tool
+def sync_knowledge_vault() -> str:
+    """
+    Scans the inbox folder for new projects and PDF documents, processes them, 
+    and updates the vector database. Automatically runs a follow-up vector search 
+    to retrieve new additions instantly inside this transaction loop.
+    """
+    try:
+        import contextlib
+        import io
+        f = io.StringIO()
+        with contextlib.redirect_stdout(f):
+            result = run_incremental_sync()
+        sync_log = result
+        
+        # Immediately invoke a vector search with the user's latest query parameters
+        cfg = load_config()
+        db_path_resolved = cfg.get("db_path", DB_PATH)
+        query = LATEST_USER_QUERY or "latest updates"
+        search_result = _run_vector_search(query, db_path_resolved)
+        
+        return (
+            f"{sync_log}\n\n"
+            f"=== Auto-Search Chaining Results for '{query}' ===\n"
+            f"{search_result}\n\n"
+            f"[SYSTEM NOTICE]: Synchronization load complete and search has been executed. "
+            f"Do not call sync_knowledge_vault or search_knowledge_vault again in this interaction loop. "
+            f"Formulate your final response to the user's query now based on these results."
+        )
+    except Exception as e:
+        return f"ERROR syncing workspace: {str(e)}"
+
 
 
 def get_dynamic_agent():
@@ -119,8 +249,7 @@ def get_dynamic_agent():
     ollama_base_url = cfg.get("ollama_base_url", "http://localhost:11434/v1")
     primary_model = cfg.get("primary_model", "jarvis_brain")
     fallback_model = cfg.get("fallback_model", "qwen2.5-coder:3b-instruct-q4_K_M")
-    # ── Decoupled Embeddings ──────────────────────────────────────────────────
-    # Langchain OpenAIEmbeddings replaced with local HuggingFaceEmbeddings inside the tool
+    provider = cfg.get("provider_type", "omniroute")
 
     # ── Base LLMs ──────────────────────────────────────────────────────────────
     primary_llm = ChatOpenAI(
@@ -129,7 +258,8 @@ def get_dynamic_agent():
         openai_api_key=api_key or "sk-9e731d7385077d7e-2cbf0c-598b3170",
         temperature=0.1,
         max_retries=1,
-        request_timeout=30,
+        request_timeout=120 if provider == "omniroute" else 30,
+        max_tokens=8192 if provider == "omniroute" else None,
     )
     fallback_llm = ChatOpenAI(
         model=fallback_model,
@@ -139,70 +269,8 @@ def get_dynamic_agent():
         request_timeout=30,
     )
 
-    # ── Knowledge Vault Tool ───────────────────────────────────────────────────
-    db_path_resolved = cfg.get("db_path", DB_PATH)
-
-    @tool
-    def search_knowledge_vault(query: str) -> str:
-        """
-        Searches the Jarvis QS Knowledge Vault (PDFs, Excel files, Specs).
-        Use this tool whenever you need to look up standard drawings, building codes,
-        contract clauses, or project-specific documents.
-        """
-        try:
-            if not os.path.exists(db_path_resolved):
-                return f"Error: FAISS path '{db_path_resolved}' does not exist. Please run ingestion first."
-
-            # Load FAISS index
-            from langchain_community.embeddings import HuggingFaceEmbeddings
-            from langchain_community.vectorstores import FAISS
-            embeddings = HuggingFaceEmbeddings(
-                model_name="all-MiniLM-L6-v2",
-                model_kwargs={'device': 'cpu'},
-                encode_kwargs={'normalize_embeddings': False}
-            )
-            vectorstore = FAISS.load_local(db_path_resolved, embeddings, allow_dangerous_deserialization=True)
-            retriever = vectorstore.as_retriever(search_kwargs={"k": 15})
-            results = retriever.invoke(query)
-
-            if not results:
-                return "No relevant information found in the Knowledge Vault."
-
-            formatted_context = []
-            for i, doc in enumerate(results):
-                # Safely extract metadata dictionary
-                meta = doc.metadata if isinstance(doc.metadata, dict) else {}
-                source = meta.get("filename") or meta.get("source") or "Unknown Document"
-
-                content_snippet = doc.page_content[:1000]
-                header = f"--- Result {i+1} (Source: {source}) ---"
-                formatted_context.append(f"{header}\n{content_snippet}")
-
-            return "\n\n".join(formatted_context)
-
-        except Exception as e:
-            error_msg = str(e)
-            # Return a distinct prompt injection to the LLM so it knows it's a system outage, not an empty search
-            return f"❌ [SYSTEM OUTAGE]: The vector database or embedding API connection failed. Error details: {error_msg}. INSTRUCTION: Tell the user exactly this: 'My connection to the Knowledge Vault is temporarily down. I cannot search your projects right now.'"
-
-    @tool
-    def sync_knowledge_vault() -> str:
-        """
-        Triggers an incremental sync of the local workspace.
-        Call this tool whenever the user states they have added a NEW project,
-        added ADDITIONAL files to an old project, or UPDATED/modified an existing spreadsheet or document.
-        """
-        try:
-            import contextlib
-            import io
-            f = io.StringIO()
-            with contextlib.redirect_stdout(f):
-                result = run_incremental_sync()
-            return result
-        except Exception as e:
-            return f"ERROR syncing workspace: {str(e)}"
-
-    tools = [search_knowledge_vault, sync_knowledge_vault]
+    # Tools are now defined globally at the module level
+    tools = [search_knowledge_vault, search_spreadsheet_data, sync_knowledge_vault]
 
     # ── STEP 1: Bind tools to each model individually ──────────────────────────
     primary_with_tools = primary_llm.bind_tools(tools)
@@ -242,6 +310,8 @@ def run_cli() -> None:
             if query.lower() in ["exit", "quit"]:
                 break
             print("\nJarvis > Thinking...\n")
+            global LATEST_USER_QUERY
+            LATEST_USER_QUERY = query
             response = agent.invoke({"messages": [("user", query)]})
             messages = response.get("messages", [])
             if messages:

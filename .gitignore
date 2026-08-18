@@ -1,0 +1,5 @@
+# Dependencies
+node_modules/
+
+# Local FAISS index/data
+faiss_data/

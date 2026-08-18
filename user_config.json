@@ -1,0 +1,11 @@
+{
+    "provider_type": "omniroute",
+    "primary_model": "jarvis_brain",
+    "fallback_model": "qwen2.5-coder:3b-instruct-q4_K_M",
+    "base_url": "https://omni.dhanrickeviota.com/v1",
+    "api_key": "sk-9e731d7385077d7e-2cbf0c-598b3170",
+    "ollama_base_url": "http://localhost:11434/v1",
+    "embedding_model": "mistral/mistral/mistral-embed",
+    "embedding_base_url": "https://omni.dhanrickeviota.com/v1",
+    "embedding_api_key": "sk-9e731d7385077d7e-2cbf0c-598b3170"
+}

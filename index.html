@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jarvis QS</title>
+  <link rel="stylesheet" href="https://unpkg.com/@vscode/codicons/dist/codicon.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- Top: Custom Titlebar (No AI Toggle here) -->
+    <header class="titlebar">
+      <div class="titlebar-left">
+        <span class="titlebar-logo">J</span>
+        <span class="titlebar-title">Jarvis QS</span>
+      </div>
+      <div class="titlebar-right">
+        <span class="titlebar-command-palette" id="cmdPaletteBtn" title="Command Palette">
+          <span class="codicon codicon-terminal"></span>
+        </span>
+        <span class="titlebar-window-controls">
+          <button class="win-btn win-btn-min" id="winMinBtn" title="Minimize">&#x2751;</button>
+          <button class="win-btn win-btn-max" id="winMaxBtn" title="Maximize">&#x2B1A;</button>
+          <button class="win-btn win-btn-close" id="winCloseBtn" title="Close">&#x2716;</button>
+        </span>
+      </div>
+    </header>
+
+    <!-- Middle: Main Body Container (display: flex; flex: 1; overflow: hidden;) -->
+    <main class="main-body">
+      <!-- Column 1: Leftmost Activity Bar -->
+      <nav class="activity-bar" aria-label="Primary">
+        <div class="activity-top">
+          <button class="activity-item active" title="Explorer" data-view="explorer">
+            <span class="codicon codicon-files"></span>
+          </button>
+          <button class="activity-item" title="Search" data-view="search">
+            <span class="codicon codicon-search"></span>
+          </button>
+          <button class="activity-item" title="Extensions" data-view="extensions">
+            <span class="codicon codicon-beaker"></span>
+          </button>
+          <button class="activity-item" title="Knowledge" data-view="knowledge">
+            <span class="codicon codicon-book"></span>
+          </button>
+          <button class="activity-item" title="Settings" data-view="settings">
+            <span class="codicon codicon-settings-gear"></span>
+          </button>
+        </div>
+        <div class="activity-bottom">
+          <button class="activity-item ai-toggle-item" id="aiToggleBtn" title="Toggle AI Panel">
+            <span class="codicon codicon-robot"></span>
+          </button>
+        </div>
+      </nav>
+
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <span class="sidebar-title">Explorer</span>
+          <button class="codicon codicon-new-file" title="New File"></button>
+        </div>
+
+        <div class="sidebar-section active" id="section-explorer">
+          <div class="sidebar-tree">
+            <div style="padding: 8px 12px; color: #888888; font-style: italic; font-size: 11px;">Scanning workspace...</div>
+          </div>
+        </div>
+
+        <div class="sidebar-section" id="section-search" hidden>
+          <div class="search-box">
+            <span class="codicon codicon-search search-icon"></span>
+            <input class="search-input" placeholder="Search files..." />
+          </div>
+        </div>
+
+        <div class="sidebar-section" id="section-extensions" hidden>
+          <div class="extension-list">
+            <div class="extension-card">
+              <div class="extension-title">dev_mode</div>
+              <div class="extension-desc">Self-evolution server module</div>
+              <div class="extension-status active">Active</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sidebar-section" id="section-knowledge" hidden>
+          <div class="vault-panel-content" style="padding: 12px 16px;">
+            <h4 style="margin: 0 0 12px 0; font-size: 13px; color: var(--text);">Knowledge Vault</h4>
+            <div class="vault-stats" style="margin-bottom: 16px; padding: 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; gap: 8px;">
+              <p style="margin: 0; font-size: 11px; color: var(--text-secondary);">Total Indexed Files: <strong id="vault-file-count" style="color: var(--text); font-weight: 600;">Loading...</strong></p>
+              <p style="margin: 0; font-size: 11px; color: var(--text-secondary);">Last Synced: <strong id="vault-last-synced" style="color: var(--text); font-weight: 600;">-</strong></p>
+            </div>
+
+            <button id="btn-sync-vault" class="setting-btn save-btn" style="width: 100%; height: 32px; font-size: 12px; margin: 0; font-weight: 600; cursor: pointer;">
+              ⚡ Sync Knowledge Vault
+            </button>
+
+            <div id="vault-sync-status" style="margin-top: 12px; text-align: center; font-size: 11px; color: var(--text-secondary);"></div>
+          </div>
+        </div>
+
+        <div class="sidebar-section" id="section-settings" hidden>
+          <div class="settings-group">
+            <h4 class="settings-title">AI Provider & Models</h4>
+            
+            <label class="setting-item">
+              <span class="setting-label">Preset</span>
+              <select id="providerType" class="setting-input">
+                <option value="omniroute">OmniRoute (Local/Remote Proxy)</option>
+                <option value="openai">OpenAI Official</option>
+                <option value="anthropic">Anthropic Compatible</option>
+                <option value="ollama">Local Ollama Direct</option>
+                <option value="custom">Custom Endpoint</option>
+              </select>
+            </label>
+
+            <label class="setting-item">
+              <span class="setting-label">Base URL</span>
+              <input id="baseUrl" class="setting-input" value="http://omni.dhanrickeviota.com/v1" />
+            </label>
+
+            <label class="setting-item">
+              <span class="setting-label">API Key</span>
+              <input id="apiKey" class="setting-input" type="password" placeholder="sk-..." />
+            </label>
+
+            <label class="setting-item">
+              <span class="setting-label">Ollama Base (Fallback)</span>
+              <input id="ollamaBaseUrl" class="setting-input" value="http://localhost:11434/v1" />
+            </label>
+
+            <div class="setting-actions">
+              <button id="syncModelsBtn" class="setting-btn sync-btn">
+                <span class="codicon codicon-sync"></span> Sync Models
+              </button>
+            </div>
+
+            <label class="setting-item">
+              <span class="setting-label">Primary Model</span>
+              <select id="primaryModel" class="setting-input"></select>
+            </label>
+
+            <label class="setting-item">
+              <span class="setting-label">Fallback Model</span>
+              <select id="fallbackModel" class="setting-input"></select>
+            </label>
+
+            <label class="setting-item">
+              <span class="setting-label">Embedding Model</span>
+              <input id="embeddingModel" class="setting-input" />
+            </label>
+
+            <div class="settings-group" style="margin-top: 15px; border-top: 1px solid var(--border); padding-top: 15px;">
+              <h4 class="settings-title" style="margin-bottom: 8px;">Workspace Directories</h4>
+              
+              <label class="setting-item" style="display: block; margin-bottom: 10px;">
+                <span class="setting-label" style="display: block; margin-bottom: 4px;">Knowledge Inbox</span>
+                <div style="display: flex; gap: 6px; align-items: center;">
+                  <input id="config-inbox-path" class="setting-input" style="flex: 1;" placeholder="D:/knowledge_inbox" />
+                  <button id="btn-browse-inbox" class="setting-btn" style="min-width: 60px; height: 26px; margin: 0; padding: 0 8px; font-size: 11px; cursor: pointer;">Browse</button>
+                </div>
+              </label>
+
+              <label class="setting-item" style="display: block;">
+                <span class="setting-label" style="display: block; margin-bottom: 4px;">FAISS Database</span>
+                <div style="display: flex; gap: 6px; align-items: center;">
+                  <input id="config-faiss-path" class="setting-input" style="flex: 1;" placeholder="D:/Jarvis_QS/faiss_data" />
+                  <button id="btn-browse-faiss" class="setting-btn" style="min-width: 60px; height: 26px; margin: 0; padding: 0 8px; font-size: 11px; cursor: pointer;">Browse</button>
+                </div>
+              </label>
+            </div>
+
+            <div class="setting-actions">
+              <button id="saveSettingsBtn" class="setting-btn save-btn">
+                <span class="codicon codicon-save"></span> Save Settings
+              </button>
+            </div>
+            <div id="settingsStatus" class="settings-status"></div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Insert between Sidebar and Editor -->
+      <div class="resizer" id="resizer-left"></div>
+
+      <!-- Column 2: Main Workspace (Center) -->
+      <section class="workspace-main">
+        <div class="tabs">
+          <div class="tab active" data-tab="welcome">
+            <span class="tab-label">Welcome</span>
+            <span class="tab-icon codicon codicon-close"></span>
+          </div>
+        </div>
+        <div class="editor-content">
+          <div class="tab-panel active" id="panel-welcome">
+            <div class="welcome">
+              <h2>Main Viewer / Workspace</h2>
+              <p style="margin-top: 8px; color: var(--text-secondary);">Jarvis QS Quantum Shell with LangGraph Orchestration & FAISS Vault.</p>
+              
+              <div class="welcome-grid" style="margin-top: 24px;">
+                <div class="welcome-card">
+                  <div class="welcome-card-title">🤖 Resilient AI Brain</div>
+                  <div class="welcome-card-desc">OmniRoute + Local Ollama Fallback</div>
+                </div>
+                <div class="welcome-card">
+                  <div class="welcome-card-title">📚 Knowledge Vault</div>
+                  <div class="welcome-card-desc">FAISS Vector Database Indexing</div>
+                </div>
+                <div class="welcome-card">
+                  <div class="welcome-card-title">🧩 Dynamic Models</div>
+                  <div class="welcome-card-desc">Auto-fetch & hot-swappable settings</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- VS Code Style Bottom Panel -->
+        <div class="workspace-bottom-panel" id="workspaceBottomPanel">
+            <div class="panel-resize-handle" id="panelResizeHandle"></div>
+
+            <div class="panel-tab-bar">
+                <div class="panel-tabs-left">
+                    <button class="panel-tab-item" data-target="problems">Problems <span class="panel-badge">6</span></button>
+                    <button class="panel-tab-item" data-target="output">Output</button>
+                    <button class="panel-tab-item" data-target="debug">Debug Console</button>
+                    <button class="panel-tab-item active" data-target="terminal">Terminal</button>
+                    <button class="panel-tab-item" data-target="ports">Ports</button>
+                </div>
+
+                <div class="panel-toolbar-right">
+                    <span class="shell-indicator">🗔 pwsh</span>
+                    <button class="panel-tool-btn" id="addTerminalBtn" title="New Terminal (+)">＋ ▾</button>
+                    <button class="panel-tool-btn" id="splitTerminalBtn" title="Split Terminal (⬌)">⬌</button>
+                    <button class="panel-tool-btn" id="killTerminalBtn" title="Kill Terminal (🗑)">🗑</button>
+                    <button class="panel-tool-btn" id="panelOverflowBtn" title="More Actions (...)">⋯</button>
+                    <button class="panel-tool-btn" id="togglePanelSizeBtn" title="Maximize/Restore Panel">🗖</button>
+                    <button class="panel-tool-btn" id="closePanelBtn" title="Close Panel (✕)">✕</button>
+                </div>
+            </div>
+
+            <div class="panel-content-body" style="position: relative; height: calc(100% - 28px); overflow: hidden;">
+                <!-- Problems View -->
+                <div class="panel-view" id="view-problems" style="display: none; padding: 8px 12px;">
+                    <div style="color: #94a3b8;">config_manager.py (core) - 6 problems detected</div>
+                    <div style="color: #fbbf24;">⚠ Import block is un-sorted or un-formatted Ruff(I001) [Ln 1, Col 1]</div>
+                    <div style="color: #fbbf24;">⚠ 'os' imported but unused Ruff(F401) [Ln 1, Col 8]</div>
+                </div>
+
+                <!-- Output View -->
+                <div class="panel-view" id="view-output" style="display: none; padding: 8px 12px;">[Output] Orchestrator daemon running smoothly. Ready for tool execution.</div>
+
+                <!-- Debug Console View -->
+                <div class="panel-view" id="view-debug" style="display: none; padding: 8px 12px;">Debugger connected to OmniRoute / LangGraph session. Ready.</div>
+
+                <!-- Terminal View -->
+                <div class="panel-view active" id="view-terminal" style="display: flex; flex-direction: column; height: 100%; padding: 0;">
+                    <div class="terminal-instances-bar" id="terminalInstancesBar">
+                        <button class="term-instance-pill active" data-term="1">
+                            <span>1: powershell</span>
+                            <span class="term-close-btn" data-term="1">✕</span>
+                        </button>
+                    </div>
+                    <div id="terminalPanesContainer" style="flex: 1; position: relative; background: #1e1e1e; overflow: hidden;">
+                        <div class="terminal-instance-pane active" id="termPane-1" style="height: 100%; overflow-y: auto; padding: 8px; box-sizing: border-box; font-family: monospace; white-space: pre-wrap;">
+                            <div style="color: #60a5fa;">PS D:\Jarvis_QS> Loading active terminal...</div>
+                        </div>
+                    </div>
+                    <div class="terminal-prompt-line">
+                        <span class="terminal-prompt-symbol">❯</span>
+                        <input type="text" class="terminal-input" id="terminalInput" placeholder="Type terminal command here..." />
+                    </div>
+                </div>
+
+                <!-- Ports View -->
+                <div class="panel-view" id="view-ports" style="display: none; padding: 8px 12px;">No active forwarded ports in workspace.</div>
+            </div>
+        </div>
+      </section>
+
+      <!-- Insert between Editor and AI Panel -->
+      <div class="resizer" id="resizer-right"></div>
+
+      <!-- Column 3: AI Panel (Rightmost) -->
+      <aside class="right-panel" id="rightPanel">
+        <div class="panel-tabs">
+          <button class="panel-tab active" data-panel="assistant">AI</button>
+          <button class="panel-tab" data-panel="properties">Details</button>
+          <button class="panel-tab" data-panel="graph">Graph</button>
+        </div>
+        <div class="panel-content">
+          <div class="panel-section active" id="panel-assistant">
+            <div class="chat" id="chatContainer">
+              <div class="chat-message assistant">
+                <div class="chat-avatar">J</div>
+                <div class="chat-bubble message-bubble ai-message">Online. Ready to assist.</div>
+              </div>
+            </div>
+            <div class="chat-input-wrap">
+              <input id="chatInput" class="chat-input" placeholder="Ask Jarvis..." autocomplete="off" />
+              <button id="chatSend" class="chat-send codicon codicon-send" type="button"></button>
+            </div>
+          </div>
+          <div class="panel-section" id="panel-properties" hidden>
+            <div class="property">
+              <span class="property-key">Context</span>
+              <span class="property-value">4096 tokens</span>
+            </div>
+            <div class="property">
+              <span class="property-key">Temperature</span>
+              <span class="property-value">0.1</span>
+            </div>
+            <div class="property">
+              <span class="property-key">Worker</span>
+              <span class="property-value" id="propertyWorker">Orchestrator</span>
+            </div>
+          </div>
+          <div class="panel-section" id="panel-graph" hidden>
+            <div class="graph-placeholder">
+              <span class="codicon codicon-graph"></span>
+              <span>Knowledge graph preview</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- Bottom: Status Bar -->
+    <footer class="status-bar">
+      <span class="status-item"><span class="codicon codicon-check"></span> Ready</span>
+      <span class="status-item status-right">OmniRoute | LangGraph</span>
+    </footer>
+  </div>
+
+  <!-- Xterm.js Assets -->
+  <link rel="stylesheet" href="node_modules/@xterm/xterm/css/xterm.css" />
+  <script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+
+  <!-- Monaco Editor Assets -->
+  <link rel="stylesheet" data-name="vs/editor/editor.main" href="node_modules/monaco-editor/min/vs/editor/editor.main.css">
+  <script src="node_modules/monaco-editor/min/vs/loader.js"></script>
+  <script>
+    if (typeof require !== 'undefined') {
+      require.config({ paths: { 'vs': 'node_modules/monaco-editor/min/vs' } });
+    }
+  </script>
+  <!-- Marked.js CDN for Rich Markdown Chat Rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

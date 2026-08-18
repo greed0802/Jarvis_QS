@@ -1,0 +1,17 @@
+{
+  "ollama": {
+    "base_url": "http://localhost:11434",
+    "model": "qwen2.5-coder:3b-instruct-q4_K_M"
+  },
+  "openai": {
+    "api_key": "",
+    "model": "gpt-4o"
+  },
+  "knowledge": {
+    "watch_path": "D:/Jarvis_QS/knowledge",
+    "db_path": "D:/Jarvis_QS/faiss_data"
+  },
+  "extensions": {
+    "dev_mode": true
+  }
+}
